@@ -1,0 +1,174 @@
+#!/bin/sh
+# better-initramfs project
+# https://bitbucket.org/piotrkarbowski/better-initramfs
+# Copyright (c) 2010-2018, Piotr Karbowski <piotr.karbowski@gmail.com>
+# All rights reserved.
+
+# Load functions.
+. /functions.sh
+
+run_hooks init
+
+# Prepare dirs
+run dodir /dev /newroot /sbin /proc /sys /etc /var/log /var/run /run /run/cryptsetup /ps4hdd
+for d in /lib /usr/lib; do
+   # ! -e && ! -h: also skip broken symlinks
+   if [ -d "${d}" ] && [ ! -e "${d}64" ] && [ ! -h "${d}64" ]; then
+      run ln -s "${d}" "${d}64"
+   fi
+done
+unset -v d
+
+# Basic /dev content, we need it as fast as possible.
+[ ! -e /dev/console ]  && run mknod /dev/console c 5 1
+[ ! -e /dev/null ]     && run mknod /dev/null c 1 3
+[ ! -e /dev/tty ]      && run mknod /dev/tty c 5 0
+[ ! -e /dev/urandom ]  && run mknod /dev/urandom c 1 9
+[ ! -e /dev/random ]   && run mknod /dev/random c 1 8
+[ ! -e /dev/zero ]     && run mknod /dev/zero c 1 5
+
+# Save IFS so we can easly restore it if we ever change it.
+readonly default_ifs="${IFS}"
+
+# Basic
+kernelver="$(uname -r)"
+ver="$(cat /VERSION)"
+
+einfo "better-initramfs ${ver}. Linux kernel ${kernelver}.\n"
+echo -e "\nWelcome to better-initramfs ${ver}. Linux kernel ${kernelver}.\n" > /etc/motd
+
+emount /proc /sys
+
+# Disable kernel messages from popping onto the screen
+echo 0 > /proc/sys/kernel/printk
+
+#[ -r /CMDLINE ] && process_commandline_options /CMDLINE
+#process_commandline_options /proc/cmdline
+#[ -r /CMDLINE.late ] && process_commandline_options /CMDLINE.late
+
+InitializeBusybox
+emount /dev
+run_hooks early
+SetupNetwork
+use sshd && setup_sshd
+loadkeymap
+
+use rootdelay rootdelay
+
+# Let's try to support all possible combinations of storage layers.
+use bcache register_bcache_devices
+use softraid InitializeSoftwareRaid && use bcache register_bcache_devices
+use lvm InitializeLVM && use bcache register_bcache_devices
+use luks InitializeLUKS && use lvm InitializeLVM && use bcache register_bcache_devices
+
+populate_dev_disk_by_label_and_uuid
+
+
+# PS4 Bootmenu
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mPS4-Bootmenu"
+echo ""
+echo ""
+sleep 7
+# Mount external Drives if connected
+mount LABEL=gentoo /newroot
+mount LABEL=psxitarch /newroot
+mount LABEL=gentoo2 /newroot
+
+sleep 1
+
+if [ -d /newroot/root ]; then
+echo   "switich into distro" 
+# Copy GPU Firmware, Edid and EAP-Key into Distro
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mAdd eap key, edid and amdgpu firmware to the distro"
+cp /key/eap_hdd_key.bin /newroot/
+mkdir -p /newroot/lib/firmware
+cp -R /lib/firmware/amdgpu /newroot/lib/firmware/
+mkdir -p /newroot/lib/firmware/edid
+cp /lib/firmware/edid/my_edid.bin /newroot/lib/firmware/edid/
+
+use rescueshell rescueshell
+use swsusp && SwsuspResume
+use tuxonice TuxOnIceResume
+run_hooks pre_newroot_mount
+emount /newroot
+run_hooks post_newroot_mount
+emount /newroot/usr
+run_hooks newroot_late
+# Wait for sshd connection only if rescueshell have never occur.
+use sshd && was_shell || wait_sshd
+cleanup
+moveDev
+eumount /sys /proc
+run_hooks pre_switch_root
+boot_newroot
+
+else 
+
+# Screen clear
+clear
+
+echo   "Open Internal Bootmenu"
+fi 
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mAutoboot in (13) seconds with default Image: (\e[32m\e[1mlinux.img\e[39m\e[0m) or just press press Enter for skip"
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mEnter Distro Filename without .img For example, (\e[32m\e[1mgentoo\e[39m\e[0m) to boot the imagefile gentoo.img."
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mMount Internal Drive and checking for Distros..."
+# mount internal hdd
+res=$(dmesg | grep 0x9920)
+if [ "$res" == "" ]; then
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0m\e[32m\e[1mPS4 Belize / Baikal\e[39m\e[0m internal drive mounted"
+cryptsetup -d /key/eap_hdd_key.bin --cipher aes-xts-plain64 -s 256 --offset 0 --skip 111669149696 create ps4hdd /dev/sd?27
+mount -t ufs -o ufstype=ufs2 /dev/mapper/ps4hdd /ps4hdd
+chmod -R a+rwX /ps4hdd
+else
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0m\e[32m\e[1mPS4 Aeolia\e[39m\e[0m internal drive mounted"
+cryptsetup -d /key/eap_hdd_key.bin --cipher aes-xts-plain64 -s 256 --offset 0 create ps4hdd /dev/sd?27
+mount -t ufs -o ufstype=ufs2 /dev/mapper/ps4hdd /ps4hdd
+chmod -R a+rwX /ps4hdd
+fi
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mDistro's found on your drive"
+ls /ps4hdd/system/boot/*img | xargs -n1 -I{} basename "{}"
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mWaiting for user input...or press Enter"
+read -t 13 distno
+name="${distno:=linux}"
+
+losetup /dev/loop5 /ps4hdd/system/boot/$distno.img
+mount /dev/loop5 /newroot
+
+# Copy GPU Firmware, Edid and EAP-Key into Distro
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mAdd eap key, edid and amdgpu firmware to the distro"
+cp /key/eap_hdd_key.bin /newroot/
+mkdir -p /newroot/lib/firmware
+cp -R /lib/firmware/amdgpu /newroot/lib/firmware/
+mkdir -p /newroot/lib/firmware/edid
+cp /lib/firmware/edid/my_edid.bin /newroot/lib/firmware/edid/
+
+
+# remount ps4drive to newroot
+# mount -t ufs -o ufstype=ufs2 /dev/mapper/ps4drive /newroot/ps4hdd
+
+mkdir -p /newroot/ps4hdd
+mount --rbind /ps4hdd /newroot/ps4hdd
+
+echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mNow booting the distro on \e[34m\e[1m$distno\e[39m\e[0m. loading..."
+
+use rescueshell rescueshell
+use swsusp && SwsuspResume
+use tuxonice TuxOnIceResume
+run_hooks pre_newroot_mount
+emount /newroot
+run_hooks post_newroot_mount
+emount /newroot/usr
+run_hooks newroot_late
+# Wait for sshd connection only if rescueshell have never occur.
+use sshd && was_shell || wait_sshd
+cleanup
+moveDev
+eumount /sys /proc
+run_hooks pre_switch_root
+boot_newroot
+
+
+ewarn "Something went wrong."
+rescueshell
+
+# vim: noexpandtab
