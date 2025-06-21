@@ -49,8 +49,11 @@ echo 0 > /proc/sys/kernel/printk
 InitializeBusybox
 emount /dev
 run_hooks early
-SetupNetwork
-use sshd && setup_sshd
+
+#echo "off" > /sys/class/drm/card0-HDMI-A-1/status
+
+#SetupNetwork
+#use sshd && setup_sshd
 loadkeymap
 
 use rootdelay rootdelay
@@ -61,58 +64,17 @@ use softraid InitializeSoftwareRaid && use bcache register_bcache_devices
 use lvm InitializeLVM && use bcache register_bcache_devices
 use luks InitializeLUKS && use lvm InitializeLVM && use bcache register_bcache_devices
 
+sleep 8
+
 populate_dev_disk_by_label_and_uuid
 
+#echo "on" > /sys/class/drm/card0-HDMI-A-1/status
 
-# PS4 Bootmenu
+# PS4 Boot
 echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mPS4-Bootmenu"
 echo ""
-echo ""
-sleep 7
-# Mount external Drives if connected
-mount LABEL=gentoo /newroot
-mount LABEL=psxitarch /newroot
-mount LABEL=gentoo2 /newroot
 
-sleep 1
-
-if [ -d /newroot/root ]; then
-echo   "switich into distro" 
-# Copy GPU Firmware, Edid and EAP-Key into Distro
-echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mAdd eap key, edid and amdgpu firmware to the distro"
-cp /key/eap_hdd_key.bin /newroot/
-mkdir -p /newroot/lib/firmware
-cp -R /lib/firmware/amdgpu /newroot/lib/firmware/
-mkdir -p /newroot/lib/firmware/edid
-cp /lib/firmware/edid/my_edid.bin /newroot/lib/firmware/edid/
-
-use rescueshell rescueshell
-use swsusp && SwsuspResume
-use tuxonice TuxOnIceResume
-run_hooks pre_newroot_mount
-emount /newroot
-run_hooks post_newroot_mount
-emount /newroot/usr
-run_hooks newroot_late
-# Wait for sshd connection only if rescueshell have never occur.
-use sshd && was_shell || wait_sshd
-cleanup
-moveDev
-eumount /sys /proc
-run_hooks pre_switch_root
-boot_newroot
-
-else 
-
-# Screen clear
-clear
-
-echo   "Open Internal Bootmenu"
-fi 
-echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mAutoboot in (13) seconds with default Image: (\e[32m\e[1mlinux.img\e[39m\e[0m) or just press press Enter for skip"
-echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mEnter Distro Filename without .img For example, (\e[32m\e[1mgentoo\e[39m\e[0m) to boot the imagefile gentoo.img."
-echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mMount Internal Drive and checking for Distros..."
-# mount internal hdd
+# Mount internal Drive Aeolia / Belize / Baikal
 res=$(dmesg | grep 0x9920)
 if [ "$res" == "" ]; then
 echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0m\e[32m\e[1mPS4 Belize / Baikal\e[39m\e[0m internal drive mounted"
@@ -125,50 +87,180 @@ cryptsetup -d /key/eap_hdd_key.bin --cipher aes-xts-plain64 -s 256 --offset 0 cr
 mount -t ufs -o ufstype=ufs2 /dev/mapper/ps4hdd /ps4hdd
 chmod -R a+rwX /ps4hdd
 fi
-echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mDistro's found on your drive"
-ls /ps4hdd/system/boot/*img | xargs -n1 -I{} basename "{}"
-echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mWaiting for user input...or press Enter"
-read -t 13 distno
-name="${distno:=linux}"
 
-losetup /dev/loop5 /ps4hdd/system/boot/$distno.img
-mount /dev/loop5 /newroot
+#!/bin/sh
 
-# Copy GPU Firmware, Edid and EAP-Key into Distro
-echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mAdd eap key, edid and amdgpu firmware to the distro"
-cp /key/eap_hdd_key.bin /newroot/
-mkdir -p /newroot/lib/firmware
-cp -R /lib/firmware/amdgpu /newroot/lib/firmware/
-mkdir -p /newroot/lib/firmware/edid
-cp /lib/firmware/edid/my_edid.bin /newroot/lib/firmware/edid/
+SAVEFILE="/ps4hdd/data/linux/ps4_partition_selection"
+MOUNTPOINT="/newroot"
+LABEL_PREFIX="ps4"
+TIMEOUT=5
+IMG_DIR="/ps4hdd/data/linux"
+LOOPDEV="/dev/loop0"
+
+human_readable_size() {
+    size="$1"
+    if [ "$size" -ge 1073741824 ]; then
+        echo "$((size / 1073741824))G"
+    elif [ "$size" -ge 1048576 ]; then
+        echo "$((size / 1048576))M"
+    elif [ "$size" -ge 1024 ]; then
+        echo "$((size / 1024))K"
+    else
+        echo "${size}B"
+    fi
+}
+
+# Vorbereitungen
+#mkdir -p "$MOUNTPOINT" /proc /sys /dev /etc
+
+# Loopdevice erzeugen, falls nicht vorhanden
+[ -b "$LOOPDEV" ] || mknod "$LOOPDEV" b 7 0
+
+# Pseudo-Dateisysteme mounten
+#mount -t proc none /proc
+#mount -t sysfs none /sys
+#mount -t devtmpfs none /dev
+
+while true; do
+    PS4_PARTS=$(ls /dev/disk/by-label/ 2>/dev/null | grep "^$LABEL_PREFIX")
+    IMG_PARTS=$(ls "$IMG_DIR"/*.img 2>/dev/null | sed "s|$IMG_DIR/||")
+
+    if [ -z "$PS4_PARTS" ] && [ -z "$IMG_PARTS" ]; then
+        echo "Keine Partitionen oder Images gefunden."
+        sleep 3
+        continue
+    fi
+
+    if [ -f "$SAVEFILE" ]; then
+        SEL=$(cat "$SAVEFILE")
+        if [ -e "/dev/disk/by-label/$SEL" ]; then
+            echo "Starte in $TIMEOUT Sekunden mit Partition: $SEL"
+            echo "Drücke Enter für Menü ..."
+            read -t $TIMEOUT dummy
+            if [ $? -ne 0 ]; then
+                echo "Mounten /dev/disk/by-label/$SEL → $MOUNTPOINT"
+                mount "/dev/disk/by-label/$SEL" "$MOUNTPOINT" && break
+                echo "Mount fehlgeschlagen."
+                sleep 2
+                continue
+            fi
+        elif [ -f "$IMG_DIR/$SEL" ]; then
+            echo "Starte in $TIMEOUT Sekunden mit Image: $SEL"
+            echo "Drücke Enter für Menü ..."
+            read -t $TIMEOUT dummy
+            if [ $? -ne 0 ]; then
+                echo "Mounten $IMG_DIR/$SEL → $MOUNTPOINT (loop)"
+                losetup "$LOOPDEV" "$IMG_DIR/$SEL" && mount "$LOOPDEV" "$MOUNTPOINT" && break
+                echo "Mount fehlgeschlagen. Loop trennen."
+                losetup -d "$LOOPDEV" 2>/dev/null
+                sleep 2
+                continue
+            fi
+        fi
+    fi
 
 
-# remount ps4drive to newroot
-# mount -t ufs -o ufstype=ufs2 /dev/mapper/ps4drive /newroot/ps4hdd
+    echo "Bitte wähle eine Partition oder ein Image:"
+    i=1
 
-mkdir -p /newroot/ps4hdd
-mount --rbind /ps4hdd /newroot/ps4hdd
+    for part in $PS4_PARTS; do
+        DEVICE="/dev/disk/by-label/$part"
+        SIZE_BYTES=$(blockdev --getsize64 "$DEVICE" 2>/dev/null)
+        if [ -n "$SIZE_BYTES" ]; then
+            SIZE_HUMAN=$(human_readable_size "$SIZE_BYTES")
+        else
+            SIZE_HUMAN="unbekannt"
+        fi
+        echo "$i) [EXT] $part  ($SIZE_HUMAN)"
+        eval "opt_$i=part:$part"
+        i=$((i + 1))
+    done
 
-echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mNow booting the distro on \e[34m\e[1m$distno\e[39m\e[0m. loading..."
+    for img in $IMG_PARTS; do
+        SIZE_BYTES=$(stat -c%s "$IMG_DIR/$img" 2>/dev/null)
+        if [ -n "$SIZE_BYTES" ]; then
+            SIZE_HUMAN=$(human_readable_size "$SIZE_BYTES")
+        else
+            SIZE_HUMAN="unbekannt"
+        fi
+        echo "$i) [INT] $img  ($SIZE_HUMAN)"
+        eval "opt_$i=img:$img"
+        i=$((i + 1))
+    done
 
-use rescueshell rescueshell
-use swsusp && SwsuspResume
-use tuxonice TuxOnIceResume
-run_hooks pre_newroot_mount
-emount /newroot
-run_hooks post_newroot_mount
-emount /newroot/usr
-run_hooks newroot_late
-# Wait for sshd connection only if rescueshell have never occur.
-use sshd && was_shell || wait_sshd
-cleanup
-moveDev
-eumount /sys /proc
-run_hooks pre_switch_root
-boot_newroot
+    echo -n "Auswahl [1]: "
+    read choice
+    choice=${choice:-1}
+
+    eval "SEL_LINE=\$opt_$choice"
+    TYPE=$(echo "$SEL_LINE" | cut -d: -f1)
+    VALUE=$(echo "$SEL_LINE" | cut -d: -f2-)
+
+    if [ "$TYPE" = "part" ]; then
+        echo "$VALUE" > "$SAVEFILE"
+        echo "Mounten /dev/disk/by-label/$VALUE → $MOUNTPOINT"
+        mount "/dev/disk/by-label/$VALUE" "$MOUNTPOINT" && break
+        echo "Mount fehlgeschlagen."
+        sleep 2
+    elif [ "$TYPE" = "img" ]; then
+        echo "$VALUE" > "$SAVEFILE"
+        echo "Mounten $IMG_DIR/$VALUE → $MOUNTPOINT (loop)"
+        losetup "$LOOPDEV" "$IMG_DIR/$VALUE" && mount "$LOOPDEV" "$MOUNTPOINT" && break
+        echo "Mount fehlgeschlagen."
+        losetup -d "$LOOPDEV" 2>/dev/null
+        sleep 2
+    else
+        echo "Ungültige Auswahl."
+        sleep 2
+    fi
+done
+
+# ==== Dateiübertragung nach erfolgreichem Mount ====
+echo "Kopiere benötigte Dateien nach $MOUNTPOINT ..."
+
+# eap_hdd_key.bin kopieren
+if [ -f /key/eap_hdd_key.bin ]; then
+    cp /key/eap_hdd_key.bin "$MOUNTPOINT/"
+fi
+
+# Firmware kopieren
+mkdir -p "$MOUNTPOINT/lib/firmware"
+cp -R /lib/firmware/amdgpu "$MOUNTPOINT/lib/firmware/" 2>/dev/null
+
+mkdir -p "$MOUNTPOINT/lib/firmware/edid"
+cp /lib/firmware/edid/my_edid.bin "$MOUNTPOINT/lib/firmware/edid/" 2>/dev/null
+
+# PS4-HDD binden
+mkdir -p "$MOUNTPOINT/ps4hdd"
+mount --rbind /ps4hdd "$MOUNTPOINT/ps4hdd"
+
+# ==== Root-Übergabe ====
+echo "Starte switch_root nach $MOUNTPOINT ..."
+exec switch_root "$MOUNTPOINT" /sbin/init
+
+# Fallback Shell
+echo "switch_root fehlgeschlagen!"
+exec sh
 
 
-ewarn "Something went wrong."
-rescueshell
+#use rescueshell rescueshell
+#use swsusp && SwsuspResume
+#use tuxonice TuxOnIceResume
+#run_hooks pre_newroot_mount
+#emount /newroot
+#run_hooks post_newroot_mount
+#emount /newroot/usr
+#run_hooks newroot_late
+## Wait for sshd connection only if rescueshell have never occur.
+#use sshd && was_shell || wait_sshd
+#cleanup
+#moveDev
+##eumount /sys /proc
+#run_hooks pre_switch_root
+#boot_newroot
+
+
+#ewarn "Something went wrong."
+#rescueshell
 
 # vim: noexpandtab
