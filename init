@@ -1,4 +1,6 @@
 #!/bin/sh
+mknod -m 622 /dev/tty0 c 4 0
+exec </dev/tty0 >/dev/tty0 2>&1
 # better-initramfs project
 # https://bitbucket.org/piotrkarbowski/better-initramfs
 # Copyright (c) 2010-2018, Piotr Karbowski <piotr.karbowski@gmail.com>
@@ -6,9 +8,7 @@
 
 # Load functions.
 . /functions.sh
-
 run_hooks init
-
 # Prepare dirs
 run dodir /dev /newroot /sbin /proc /sys /etc /var/log /var/run /run /run/cryptsetup /ps4hdd
 for d in /lib /usr/lib; do
@@ -18,7 +18,6 @@ for d in /lib /usr/lib; do
    fi
 done
 unset -v d
-
 # Basic /dev content, we need it as fast as possible.
 [ ! -e /dev/console ]  && run mknod /dev/console c 5 1
 [ ! -e /dev/null ]     && run mknod /dev/null c 1 3
@@ -26,55 +25,38 @@ unset -v d
 [ ! -e /dev/urandom ]  && run mknod /dev/urandom c 1 9
 [ ! -e /dev/random ]   && run mknod /dev/random c 1 8
 [ ! -e /dev/zero ]     && run mknod /dev/zero c 1 5
-
 # Save IFS so we can easly restore it if we ever change it.
 readonly default_ifs="${IFS}"
-
 # Basic
 kernelver="$(uname -r)"
 ver="$(cat /VERSION)"
-
 einfo "better-initramfs ${ver}. Linux kernel ${kernelver}.\n"
-echo -e "\nWelcome to better-initramfs ${ver}. Linux kernel ${kernelver}.\n" > /etc/motd
-
+echo -e "\nWelcome to ${ver}. Linux kernel ${kernelver}.\n" > /etc/motd
 emount /proc /sys
-
+# Set the Clock from Orbis
+time_from_cmdline="$(grep -o 'time=[0-9]*' /proc/cmdline | cut -d= -f2)"
+if [ -n "$time_from_cmdline" ]; then
+    date -s "@$time_from_cmdline"
+fi
 # Disable kernel messages from popping onto the screen
 echo 0 > /proc/sys/kernel/printk
-
-#[ -r /CMDLINE ] && process_commandline_options /CMDLINE
-#process_commandline_options /proc/cmdline
-#[ -r /CMDLINE.late ] && process_commandline_options /CMDLINE.late
-
 InitializeBusybox
 emount /dev
-run_hooks early
-
 #echo "off" > /sys/class/drm/card0-HDMI-A-1/status
-
+#cat /lib/firmware/edid/my_edid.bin > /sys/kernel/debug/dri/0/HDMI-A-1/edid_override
+run_hooks early
 #SetupNetwork
 #use sshd && setup_sshd
 loadkeymap
-
 use rootdelay rootdelay
-
-# Let's try to support all possible combinations of storage layers.
 use bcache register_bcache_devices
 use softraid InitializeSoftwareRaid && use bcache register_bcache_devices
 use lvm InitializeLVM && use bcache register_bcache_devices
 use luks InitializeLUKS && use lvm InitializeLVM && use bcache register_bcache_devices
-
+# slow drives need here more sleeptime maybe?
 sleep 8
-
-populate_dev_disk_by_label_and_uuid
-
 #echo "on" > /sys/class/drm/card0-HDMI-A-1/status
-
-# PS4 Boot
-echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0mPS4-Bootmenu"
-echo ""
-
-# Mount internal Drive Aeolia / Belize / Baikal
+populate_dev_disk_by_label_and_uuid
 res=$(dmesg | grep 0x9920)
 if [ "$res" == "" ]; then
 echo -e "\e[31m\e[1m>\e[34m\e[1m>\e[31m\e[1m> \e[39m\e[0m\e[32m\e[1mPS4 Belize / Baikal\e[39m\e[0m internal drive mounted"
@@ -87,10 +69,49 @@ cryptsetup -d /key/eap_hdd_key.bin --cipher aes-xts-plain64 -s 256 --offset 0 cr
 mount -t ufs -o ufstype=ufs2 /dev/mapper/ps4hdd /ps4hdd
 chmod -R a+rwX /ps4hdd
 fi
+CONFIG_FILE="/ps4hdd/data/linux/boot/initramfs.ini"
+show_menu() {
+  echo ""
+  echo "========= Playstation Boot-Menü ========="
+  echo "[1] Default Boot"
+  echo "[2] Installation"
+  echo "[3] Rescue-System (Shell)"
+  echo "[q] Reboot to Orbis OS"
+  echo "======================================="
+  echo ""
 
-#!/bin/sh
+  if [ -f "$CONFIG_FILE" ]; then
+    echo "Please make your selection (1-3)..."
+    echo "Automatic boot in 3 seconds:"
 
-SAVEFILE="/ps4hdd/data/linux/ps4_partition_selection"
+    SECONDS_LEFT=3
+    INPUT=""
+
+    while [ $SECONDS_LEFT -gt 0 ]; do
+      echo -n "$SECONDS_LEFT... "
+      read -t 1 -n 1 INPUT
+      if [ $? -eq 0 ]; then
+        echo ""
+        break
+      fi
+      SECONDS_LEFT=$((SECONDS_LEFT - 1))
+    done
+
+    if [ -z "$INPUT" ]; then
+      INPUT=1
+    fi
+  else
+    echo "No Autoboot start configuration found!"
+    echo -n "Please make your selection (1-3): "
+    read -n 1 INPUT
+    echo ""
+  fi
+
+  case "$INPUT" in
+    1)
+      echo ">> Opens the parition selection menu.."
+
+SAVEFILE="/ps4hdd/data/linux/boot/initramfs.ini"
 MOUNTPOINT="/newroot"
 LABEL_PREFIX="ps4"
 TIMEOUT=5
@@ -110,10 +131,6 @@ human_readable_size() {
     fi
 }
 
-# Vorbereitungen
-#mkdir -p "$MOUNTPOINT" /proc /sys /dev /etc
-
-# Loopdevice erzeugen, falls nicht vorhanden
 [ -b "$LOOPDEV" ] || mknod "$LOOPDEV" b 7 0
 
 # Pseudo-Dateisysteme mounten
@@ -126,7 +143,7 @@ while true; do
     IMG_PARTS=$(ls "$IMG_DIR"/*.img 2>/dev/null | sed "s|$IMG_DIR/||")
 
     if [ -z "$PS4_PARTS" ] && [ -z "$IMG_PARTS" ]; then
-        echo "Keine Partitionen oder Images gefunden."
+        echo "No partitions or images found."
         sleep 3
         continue
     fi
@@ -134,24 +151,24 @@ while true; do
     if [ -f "$SAVEFILE" ]; then
         SEL=$(cat "$SAVEFILE")
         if [ -e "/dev/disk/by-label/$SEL" ]; then
-            echo "Starte in $TIMEOUT Sekunden mit Partition: $SEL"
-            echo "Drücke Enter für Menü ..."
+            echo "booting in $TIMEOUT seconds with partition: $SEL"
+            echo "press Enter for Menu, the automatic boot will be stopped ..."
             read -t $TIMEOUT dummy
             if [ $? -ne 0 ]; then
-                echo "Mounten /dev/disk/by-label/$SEL → $MOUNTPOINT"
+                echo "mounting /dev/disk/by-label/$SEL → $MOUNTPOINT"
                 mount "/dev/disk/by-label/$SEL" "$MOUNTPOINT" && break
-                echo "Mount fehlgeschlagen."
+                echo "Mounting failed."
                 sleep 2
                 continue
             fi
         elif [ -f "$IMG_DIR/$SEL" ]; then
-            echo "Starte in $TIMEOUT Sekunden mit Image: $SEL"
-            echo "Drücke Enter für Menü ..."
+            echo "booting in $TIMEOUT seconds with partition: $SEL"
+            echo "press Enter for Menu, the automatic boot will be stopped..."
             read -t $TIMEOUT dummy
             if [ $? -ne 0 ]; then
-                echo "Mounten $IMG_DIR/$SEL → $MOUNTPOINT (loop)"
+                echo "mounting $IMG_DIR/$SEL → $MOUNTPOINT (loop)"
                 losetup "$LOOPDEV" "$IMG_DIR/$SEL" && mount "$LOOPDEV" "$MOUNTPOINT" && break
-                echo "Mount fehlgeschlagen. Loop trennen."
+                echo "Mounting failed.. Loop trennen."
                 losetup -d "$LOOPDEV" 2>/dev/null
                 sleep 2
                 continue
@@ -160,7 +177,7 @@ while true; do
     fi
 
 
-    echo "Bitte wähle eine Partition oder ein Image:"
+    echo "Please select a [External]partition or an [internal]image:"
     i=1
 
     for part in $PS4_PARTS; do
@@ -188,7 +205,7 @@ while true; do
         i=$((i + 1))
     done
 
-    echo -n "Auswahl [1]: "
+    echo -n "Selection [1]: "
     read choice
     choice=${choice:-1}
 
@@ -198,69 +215,63 @@ while true; do
 
     if [ "$TYPE" = "part" ]; then
         echo "$VALUE" > "$SAVEFILE"
-        echo "Mounten /dev/disk/by-label/$VALUE → $MOUNTPOINT"
+        echo "Mounting /dev/disk/by-label/$VALUE → $MOUNTPOINT"
         mount "/dev/disk/by-label/$VALUE" "$MOUNTPOINT" && break
-        echo "Mount fehlgeschlagen."
+        echo "Mount failed."
         sleep 2
     elif [ "$TYPE" = "img" ]; then
         echo "$VALUE" > "$SAVEFILE"
-        echo "Mounten $IMG_DIR/$VALUE → $MOUNTPOINT (loop)"
+        echo "Mounting $IMG_DIR/$VALUE → $MOUNTPOINT "
         losetup "$LOOPDEV" "$IMG_DIR/$VALUE" && mount "$LOOPDEV" "$MOUNTPOINT" && break
-        echo "Mount fehlgeschlagen."
+        echo "Mount failed."
         losetup -d "$LOOPDEV" 2>/dev/null
         sleep 2
     else
-        echo "Ungültige Auswahl."
+        echo "Invalid selection."
         sleep 2
     fi
 done
 
-# ==== Dateiübertragung nach erfolgreichem Mount ====
-echo "Kopiere benötigte Dateien nach $MOUNTPOINT ..."
-
-# eap_hdd_key.bin kopieren
+echo "Copy PS4 files to $MOUNTPOINT ..."
 if [ -f /key/eap_hdd_key.bin ]; then
     cp /key/eap_hdd_key.bin "$MOUNTPOINT/"
 fi
-
-# Firmware kopieren
 mkdir -p "$MOUNTPOINT/lib/firmware"
 cp -R /lib/firmware/amdgpu "$MOUNTPOINT/lib/firmware/" 2>/dev/null
-
 mkdir -p "$MOUNTPOINT/lib/firmware/edid"
 cp /lib/firmware/edid/my_edid.bin "$MOUNTPOINT/lib/firmware/edid/" 2>/dev/null
-
-# PS4-HDD binden
 mkdir -p "$MOUNTPOINT/ps4hdd"
 mount --rbind /ps4hdd "$MOUNTPOINT/ps4hdd"
-
-# ==== Root-Übergabe ====
-echo "Starte switch_root nach $MOUNTPOINT ..."
+echo "booting switch_root to $MOUNTPOINT ..."
 exec switch_root "$MOUNTPOINT" /sbin/init
-
-# Fallback Shell
-echo "switch_root fehlgeschlagen!"
+echo "switch_root failed! press Enter"
 exec sh
+      ;;
+    2)
+      echo ">> Open Installationmenu..."
+      /install.sh
+      ;;
+    3)
+      echo ">> Jump into Rescue-System..."
+      echo "(enter ‘exit’ to leave Shell and open Menu again.)"
+      [ -c /dev/console ] || mknod -m 600 /dev/console c 5 1
+      [ -c /dev/tty ] || mknod -m 666 /dev/tty c 5 0
+      /bin/sh
+      ;;
+    q|Q)
+      echo "Reboot to Orbis OS..."
+      exec reboot -f
+      ;;
+      *)
+      echo "Invalid selection."
+      ;;
+  esac
+}
 
-
-#use rescueshell rescueshell
-#use swsusp && SwsuspResume
-#use tuxonice TuxOnIceResume
-#run_hooks pre_newroot_mount
-#emount /newroot
-#run_hooks post_newroot_mount
-#emount /newroot/usr
-#run_hooks newroot_late
-## Wait for sshd connection only if rescueshell have never occur.
-#use sshd && was_shell || wait_sshd
-#cleanup
-#moveDev
-##eumount /sys /proc
-#run_hooks pre_switch_root
-#boot_newroot
-
-
-#ewarn "Something went wrong."
-#rescueshell
-
+# Hauptschleife
+while true; do
+  show_menu
+  echo "Back to Playstation Bootmenu ..."
+  sleep 1
+done
 # vim: noexpandtab
