@@ -30,14 +30,14 @@ readonly default_ifs="${IFS}"
 # Basic
 kernelver="$(uname -r)"
 ver="$(cat /VERSION)"
-einfo "better-initramfs ${ver}. Linux kernel ${kernelver}.\n"
-echo -e "\nWelcome to ${ver}. Linux kernel ${kernelver}.\n" > /etc/motd
 emount /proc /sys
 # Set the Clock from Orbis
 time_from_cmdline="$(grep -o 'time=[0-9]*' /proc/cmdline | cut -d= -f2)"
 if [ -n "$time_from_cmdline" ]; then
     date -s "@$time_from_cmdline"
 fi
+einfo "better-initramfs ${ver}. Linux kernel ${kernelver}.\n"
+echo -e "\nWelcome to ${ver}. Linux kernel ${kernelver}.\n" > /etc/motd
 # Disable kernel messages from popping onto the screen
 echo 0 > /proc/sys/kernel/printk
 InitializeBusybox
@@ -70,14 +70,27 @@ mount -t ufs -o ufstype=ufs2 /dev/mapper/ps4hdd /ps4hdd
 chmod -R a+rwX /ps4hdd
 fi
 CONFIG_FILE="/ps4hdd/data/linux/boot/initramfs.ini"
+
+# ANSI Farben (nahe an Sony Farben)
+BLUE='\033[1;34m'     # ✕ Blau (#0070D1)
+RED='\033[1;31m'      # ○ Rot (#D6002F)
+GREEN='\033[1;32m'    # △ Grün (#00A968)
+MAGENTA='\033[1;35m'  # ☐ Pink (#D200A4)
+WHITE='\033[1;37m'
+NC='\033[0m'          #
+
 show_menu() {
   echo ""
-  echo "========= Playstation Boot-Menü ========="
-  echo "[1] Default Boot"
-  echo "[2] Installation"
-  echo "[3] Rescue-System (Shell)"
-  echo "[q] Reboot to Orbis OS"
-  echo "======================================="
+    echo -e "${BLUE}============= ${YELLOW} Boot-Menü ${BLUE}==============${NC}"
+    echo ""
+    echo -e "${MAGENTA}[1]${NC} ${WHITE}Default Boot${NC}"
+    echo -e "${MAGENTA}[2]${NC} ${WHITE}Installation${NC}"
+    echo -e "${MAGENTA}[3]${NC} ${WHITE}Partitionmanager${NC}"
+    echo -e "${MAGENTA}[4]${NC} ${WHITE}Rescue-System (Shell)${NC}"
+    echo ""
+    echo -e "${RED}[q]${NC} ${WHITE}Reboot to Orbis OS${NC}"
+    echo -e "${BLUE}=======================================${NC}"
+  echo ""
   echo ""
 
   if [ -f "$CONFIG_FILE" ]; then
@@ -102,7 +115,7 @@ show_menu() {
     fi
   else
     echo "No Autoboot start configuration found!"
-    echo -n "Please make your selection (1-3): "
+    echo -n "Please make your selection or (q) for reboot (1-3): "
     read -n 1 INPUT
     echo ""
   fi
@@ -177,7 +190,7 @@ while true; do
     fi
 
 
-    echo "Please select a [External]partition or an [internal]image:"
+    echo "Please select a [External] Partition or [internal] Image:"
     i=1
 
     for part in $PS4_PARTS; do
@@ -252,6 +265,10 @@ exec sh
       /install.sh
       ;;
     3)
+      echo ">> Open Installationmenu..."
+      /install.sh
+      ;;
+    4)
       echo ">> Jump into Rescue-System..."
       echo "(enter ‘exit’ to leave Shell and open Menu again.)"
       [ -c /dev/console ] || mknod -m 600 /dev/console c 5 1
